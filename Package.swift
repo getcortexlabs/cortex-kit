@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "CortexKit",
     defaultLocalization: "en",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v14)],
     products: [
         // The umbrella — pulls in everything. Most apps want this.
         .library(name: "CortexKit", targets: ["CortexKit"]),

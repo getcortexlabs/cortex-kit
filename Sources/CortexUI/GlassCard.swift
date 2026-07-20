@@ -3,14 +3,23 @@ import SwiftUI
 // MARK: - Liquid Glass
 
 /// Applies the macOS 26 Liquid Glass material in a continuous rounded rect.
+/// On macOS 14–15 it degrades to ultra-thin material — same silhouette,
+/// no refraction (progressive enhancement).
 public struct LiquidGlassBackground: ViewModifier {
     public var cornerRadius: CGFloat
     public init(cornerRadius: CGFloat = 18) { self.cornerRadius = cornerRadius }
     public func body(content: Content) -> some View {
-        content.glassEffect(
-            .regular,
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            content.background(
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        }
     }
 }
 
