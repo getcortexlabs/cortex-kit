@@ -8,7 +8,7 @@ An animated "Aurora + Liquid Glass" design system, a zero-API-key AI layer that
 drives the user's local `claude`/`codex` CLI, and the plumbing every macOS app
 re-implements — preferences, Keychain, subprocess running.
 
-`SwiftUI` · `macOS 26+` · `Swift 6.2` · zero third-party dependencies
+`SwiftUI` · `macOS 14+` · `Swift 6.2` · zero third-party dependencies
 
 </div>
 
@@ -69,7 +69,12 @@ targets: [
 ]
 ```
 
-Requires **macOS 26+** and the **Swift 6.2** toolchain.
+Requires **macOS 14+** and the **Swift 6.2** toolchain.
+
+Liquid Glass is macOS 26 only, so `.liquidGlass()` falls back to
+`.ultraThinMaterial` below 26 — the nearest thing the system has, and a real
+vibrancy-backed translucency rather than a flat fill. Nothing else in the kit
+needs 26.
 
 ## Quick start
 
