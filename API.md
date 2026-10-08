@@ -33,6 +33,42 @@ enum CortexKit {
 
 No UI, no dependencies — the root of the module graph.
 
+### ShelfTedBridge
+
+Optional native-app presence integration for Shelf and Ted, using AppKit's
+Launch Services discovery and Foundation distributed notifications.
+
+```swift
+@MainActor
+let bridge = ShelfTedBridge(app: .shelf) // .ted in Ted's app delegate
+bridge.start()
+// Observe bridge.$state; call bridge.stop() during app termination.
+```
+
+States: `stopped`, `notInstalled`, `available` (installed but closed),
+`connecting`, `connected`, `unavailable` (running without a response),
+`incompatible` (different protocol version). `refresh()` rechecks discovery.
+Both apps need bridge-enabled builds. An installed older app remains optional
+and cannot be reported as connected without completing the handshake.
+
+Protocol v1 uses notification `app.cortex.shelf-ted.presence`, addressed by
+the receiver's bundle ID (`shelf.cortex.app` / `ted.cortex.app`). The `message`
+field is bounded JSON with version, sender bundle ID, PID, kind
+(`hello` / `reply` / `goodbye`), and a UUID nonce. Replies must match the
+outstanding nonce and the currently running peer PID. Launch/termination,
+activation, and wake events refresh presence; a single three-second deadline
+handles unresponsive peers. There is no idle polling or automatic app launch.
+
+This is presence metadata, **not authenticated IPC**. PID/bundle checks prevent
+accidental cross-talk, not impersonation by another local process. Do not send
+user data or execute commands over this channel. Notifications in Shelf,
+daemon/AI events, and a private authenticated content transport are future work.
+
+Validation: `swift test` covers the handshake lifecycle;
+`python3 scripts/test-shelf-ted-bridge.py` exercises the real transport in two
+isolated processes (requires a logged-in macOS session that permits distributed
+notifications; restricted agent sandboxes can block this check).
+
 ### PrefsStore
 
 A namespaced `UserDefaults` wrapper. Every key is `"<namespace>.<suffix>"`.
