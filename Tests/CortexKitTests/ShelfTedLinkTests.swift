@@ -103,6 +103,27 @@ struct ShelfTedLinkTests {
         #expect(got.action == nil)
     }
 
+    /// REGRESSÃO: o par tem que continuar vivo até o listener perguntar quem ele
+    /// é. O `send` fechava e saía assim que escrevia; o listener só é acordado
+    /// depois, pelo DispatchSource, e aí o kernel já não tinha mais o audit token
+    /// do par — um remetente legítimo levava "sem audit token" de forma
+    /// intermitente. Em produção isso significou nenhum aviso chegando à ilha,
+    /// enquanto 22 testes seguiam verdes: num teste os binários são ad-hoc, a
+    /// verificação de assinatura nem roda, e este caminho ficava invisível.
+    @Test func keepsThePeerAliveUntilItIsIdentified() async throws {
+        let path = tempSocket()
+        let received = Mailbox()
+        let listener = ShelfTedListener(socketPath: path) { received.put($0) }
+        try listener.start()
+        defer { listener.stop() }
+
+        try ShelfTedLink.send(ShelfTedAnnouncement(sender: .ted, title: "quem é você?"), to: path)
+        _ = await received.wait()
+
+        #expect(ShelfTedLink.lastPeerHadAuditToken == true,
+                "o audit token sumiu antes da verificação — a corrida voltou")
+    }
+
     /// Sem ninguém escutando, falha na hora — nada fica em fila. Um aviso atrasado
     /// na notch é ruído.
     @Test func failsFastWhenNobodyIsListening() throws {

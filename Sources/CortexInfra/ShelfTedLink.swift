@@ -20,6 +20,15 @@ import os
 public enum ShelfTedLink {
     private static let log = Logger(subsystem: "app.cortex.infra", category: "ted-link")
 
+    /// `os_log` desta camada não aparece no `log show`/`log stream` em build
+    /// avulso, o que deixou um bug de aceitação invisível por horas. Com
+    /// CORTEX_LINK_DEBUG=1 cada passo sai no stderr, que sempre aparece.
+    static let debug = ProcessInfo.processInfo.environment["CORTEX_LINK_DEBUG"] != nil
+    static func trace(_ message: @autoclosure () -> String) {
+        guard debug else { return }
+        FileHandle.standardError.write(Data("[ted-link] \(message())\n".utf8))
+    }
+
     /// Onde o socket mora. Diretório compartilhado pela família, 0700.
     public static func socketURL() throws -> URL {
         let base = try FileManager.default.url(for: .applicationSupportDirectory,
@@ -58,19 +67,27 @@ public enum ShelfTedLink {
 extension ShelfTedLink {
     /// Decide se aceita quem está do outro lado de `fd`. Devolve o motivo da
     /// recusa pra ficar no log — um canal silencioso é impossível de depurar.
+    /// Observado a cada conexão: o audit token do par estava disponível?
+    ///
+    /// Sempre lido, mesmo quando não exigimos identidade, porque é o ÚNICO jeito
+    /// de um teste cobrir a corrida que derrubou isto em produção — num teste os
+    /// binários são ad-hoc, a verificação de assinatura nem roda, e o caminho do
+    /// token ficava invisível.
+    nonisolated(unsafe) private(set) static var lastPeerHadAuditToken: Bool?
+
     static func authorize(_ fd: Int32) -> Result<Void, PeerRejection> {
         var euid = uid_t(0), egid = gid_t(0)
         guard getpeereid(fd, &euid, &egid) == 0 else { return .failure(.noCredentials) }
         guard euid == getuid() else { return .failure(.otherUser(euid)) }
 
-        guard enforcesCodeIdentity else { return .success(()) }
-
         var token = audit_token_t()
         var len = socklen_t(MemoryLayout<audit_token_t>.size)
-        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &len) == 0,
-              len == socklen_t(MemoryLayout<audit_token_t>.size) else {
-            return .failure(.noAuditToken)
-        }
+        let gotToken = getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &len) == 0
+            && len == socklen_t(MemoryLayout<audit_token_t>.size)
+        lastPeerHadAuditToken = gotToken
+
+        guard enforcesCodeIdentity else { return .success(()) }
+        guard gotToken else { return .failure(.noAuditToken) }
         let data = withUnsafeBytes(of: token) { Data($0) }
         var code: SecCode?
         guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributeAudit: data] as CFDictionary, [], &code) == errSecSuccess,
@@ -200,6 +217,7 @@ public final class ShelfTedListener: @unchecked Sendable {
         self.source = source
         source.resume()
         log.info("ted-link escutando (exige identidade de código: \(ShelfTedLink.enforcesCodeIdentity))")
+        ShelfTedLink.trace("escutando em \(path) · exige identidade: \(ShelfTedLink.enforcesCodeIdentity)")
     }
 
     public func stop() {
@@ -227,13 +245,20 @@ public final class ShelfTedListener: @unchecked Sendable {
             let client = accept(fd, nil, nil)
             guard client >= 0 else { return }   // EAGAIN: nada mais pendente
             defer { close(client) }
+            ShelfTedLink.trace("conexão aceita (fd \(client))")
             if case .failure(let rejection) = ShelfTedLink.authorize(client) {
                 log.error("ted-link recusou uma conexão: \(rejection.reason, privacy: .public)")
+                ShelfTedLink.trace("RECUSADO: \(rejection.reason)")
                 continue
             }
+            ShelfTedLink.trace("autorizado")
             var timeout = Self.receiveTimeout
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-            guard let payload = readPayload(client) else { continue }
+            guard let payload = readPayload(client) else {
+                ShelfTedLink.trace("sem payload")
+                continue
+            }
+            ShelfTedLink.trace("payload de \(payload.count) bytes")
             deliver(payload)
         }
     }
@@ -262,6 +287,7 @@ public final class ShelfTedListener: @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
         guard let raw = try? decoder.decode(ShelfTedAnnouncement.self, from: data) else {
             log.error("ted-link: payload não decodificou")
+            ShelfTedLink.trace("DECODE falhou: \(String(data: data.prefix(200), encoding: .utf8) ?? "?")")
             return
         }
         guard raw.version == ShelfTedAnnouncement.protocolVersion else {
@@ -312,5 +338,15 @@ extension ShelfTedLink {
         }
         // Fecha a escrita: é o EOF que diz ao listener que o payload acabou.
         shutdown(client, SHUT_WR)
+
+        // E ESPERA o receptor fechar. Não é cortesia: o listener só pergunta ao
+        // kernel quem somos DEPOIS do accept, e o audit token de um par que já
+        // fechou e saiu não existe mais — um remetente legítimo era recusado com
+        // "sem audit token", de forma intermitente, conforme quem ganhasse a
+        // corrida. Esperar o EOF custa milissegundos e elimina a corrida.
+        var sink = [UInt8](repeating: 0, count: 1)
+        var wait = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &wait, socklen_t(MemoryLayout<timeval>.size))
+        _ = recv(client, &sink, 1, 0)   // 0 no EOF, -1 no timeout: os dois servem
     }
 }
